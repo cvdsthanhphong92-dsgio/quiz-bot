@@ -3,15 +3,33 @@ import io
 import base64
 import csv
 import asyncio
+import threading
 import requests
 import unicodedata
 import re
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_KEY", "")
 SHEET_CSV_URL = os.environ.get("SHEET_CSV_URL", "")
+PORT = int(os.environ.get("PORT", 8080))
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Quiz Bot is running!")
+
+    def log_message(self, format, *args):
+        pass
+
+
+def run_health_server():
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    server.serve_forever()
 
 
 def normalize(s):
@@ -134,8 +152,7 @@ def ocr_image(photo_bytes, mime_type="image/jpeg"):
         "content-type": "application/json",
     }
     resp = requests.post("https://api.anthropic.com/v1/messages", json=payload, headers=headers, timeout=30)
-    data = resp.json()
-    return data["content"][0]["text"]
+    return resp.json()["content"][0]["text"]
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -148,8 +165,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ocr_text = ocr_image(bytes(photo_bytes))
         rows = fetch_and_dedup_sheet()
         results = search_rows(rows, ocr_text)
-        reply = format_results(results, ocr_text)
-        await msg.reply_text(reply)
+        await msg.reply_text(format_results(results, ocr_text))
     elif msg.text:
         text = msg.text.strip()
         if text.startswith("/start"):
@@ -164,17 +180,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         rows = fetch_and_dedup_sheet()
         results = search_rows(rows, text)
-        reply = format_results(results, text)
-        await msg.reply_text(reply)
+        await msg.reply_text(format_results(results, text))
 
 
 async def main():
     print("Bot đang chạy...")
+    t = threading.Thread(target=run_health_server, daemon=True)
+    t.start()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
+    print(f"Health server chạy trên port {PORT}")
     await asyncio.Event().wait()
 
 
