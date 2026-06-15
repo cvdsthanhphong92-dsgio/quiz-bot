@@ -2,7 +2,10 @@ import os
 import io
 import base64
 import csv
+import asyncio
 import requests
+import unicodedata
+import re
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
@@ -12,7 +15,6 @@ SHEET_CSV_URL = os.environ.get("SHEET_CSV_URL", "")
 
 
 def normalize(s):
-    import unicodedata
     s = (s or "").lower()
     s = unicodedata.normalize("NFD", s)
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
@@ -23,8 +25,7 @@ def normalize(s):
 def fetch_and_dedup_sheet():
     resp = requests.get(SHEET_CSV_URL, timeout=15)
     resp.encoding = "utf-8"
-    text = resp.text
-    reader = csv.reader(io.StringIO(text))
+    reader = csv.reader(io.StringIO(resp.text))
     rows = list(reader)
     seen = set()
     unique = []
@@ -47,7 +48,6 @@ def search_rows(rows, raw_input):
     if has_split:
         segments = [normalize(s) for s in raw_input.split("...") if s.strip()]
     else:
-        segments = None
         terms = normalize(raw_input).split()
 
     results = []
@@ -97,7 +97,6 @@ def format_results(results, raw_input):
     msg += f" (hiển thị {show_max} câu đầu):\n" if total > show_max else ":\n"
 
     for q in shown:
-        import re
         opts = re.split(r";\s*(?=[A-D]:)", q["opts_raw"])
         opts = [o.strip() for o in opts if o.strip()]
         msg += "\n━━━━━━━━━━━━━━━\n"
@@ -141,7 +140,6 @@ def ocr_image(photo_bytes, mime_type="image/jpeg"):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-
     if msg.photo:
         await msg.reply_text("📷 Đang đọc ảnh, vui lòng chờ...")
         photo = msg.photo[-1]
@@ -152,18 +150,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         results = search_rows(rows, ocr_text)
         reply = format_results(results, ocr_text)
         await msg.reply_text(reply)
-
     elif msg.text:
         text = msg.text.strip()
         if text.startswith("/start"):
             await msg.reply_text(
                 "👋 Xin chào! Tôi là Quiz Bot tra cứu câu hỏi kiểm tra.\n\n"
-                "📝 *Cách dùng:*\n"
-                "• Gõ từ khoá để tìm câu hỏi\n"
-                "• Dùng `...` để tìm theo thứ tự: `buddy...thành công`\n"
+                "📝 Cách dùng:\n"
+                "• Gõ từ khoá để tìm: buddy\n"
+                "• Tìm theo thứ tự: chỉ định...Prefill\n"
                 "• Gửi ảnh chụp câu hỏi để tìm tự động\n\n"
-                "Thử gõ một từ khoá nhé!",
-                parse_mode="Markdown"
+                "Thử gõ một từ khoá nhé!"
             )
             return
         rows = fetch_and_dedup_sheet()
@@ -172,12 +168,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(reply)
 
 
-def main():
+async def main():
+    print("Bot đang chạy...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
-    print("Bot đang chạy...")
-    app.run_polling()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
