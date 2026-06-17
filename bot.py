@@ -7,6 +7,7 @@ import threading
 import requests
 import unicodedata
 import re
+import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
@@ -152,35 +153,50 @@ def ocr_image(photo_bytes, mime_type="image/jpeg"):
         "content-type": "application/json",
     }
     resp = requests.post("https://api.anthropic.com/v1/messages", json=payload, headers=headers, timeout=30)
-    return resp.json()["content"][0]["text"]
+    data = resp.json()
+    if "content" not in data:
+        error_msg = data.get("error", {}).get("message", str(data))
+        raise RuntimeError(f"Claude API lỗi: {error_msg}")
+    return data["content"][0]["text"]
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if msg.photo:
-        await msg.reply_text("📷 Đang đọc ảnh, vui lòng chờ...")
-        photo = msg.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-        photo_bytes = await file.download_as_bytearray()
-        ocr_text = ocr_image(bytes(photo_bytes))
-        rows = fetch_and_dedup_sheet()
-        results = search_rows(rows, ocr_text)
-        await msg.reply_text(format_results(results, ocr_text))
-    elif msg.text:
-        text = msg.text.strip()
-        if text.startswith("/start"):
-            await msg.reply_text(
-                "👋 Xin chào! Tôi là Quiz Bot tra cứu câu hỏi kiểm tra.\n\n"
-                "📝 Cách dùng:\n"
-                "• Gõ từ khoá để tìm: buddy\n"
-                "• Tìm theo thứ tự: chỉ định...Prefill\n"
-                "• Gửi ảnh chụp câu hỏi để tìm tự động\n\n"
-                "Thử gõ một từ khoá nhé!"
-            )
-            return
-        rows = fetch_and_dedup_sheet()
-        results = search_rows(rows, text)
-        await msg.reply_text(format_results(results, text))
+    try:
+        if msg.photo:
+            await msg.reply_text("📷 Đang đọc ảnh, vui lòng chờ...")
+            photo = msg.photo[-1]
+            file = await context.bot.get_file(photo.file_id)
+            photo_bytes = await file.download_as_bytearray()
+            try:
+                ocr_text = ocr_image(bytes(photo_bytes))
+            except Exception as e:
+                await msg.reply_text(f"⚠️ Không đọc được ảnh: {str(e)[:200]}\nVui lòng thử gõ từ khoá trực tiếp.")
+                return
+            rows = fetch_and_dedup_sheet()
+            results = search_rows(rows, ocr_text)
+            await msg.reply_text(format_results(results, ocr_text))
+        elif msg.text:
+            text = msg.text.strip()
+            if text.startswith("/start"):
+                await msg.reply_text(
+                    "👋 Xin chào! Tôi là Quiz Bot tra cứu câu hỏi kiểm tra.\n\n"
+                    "📝 Cách dùng:\n"
+                    "• Gõ từ khoá để tìm: buddy\n"
+                    "• Tìm theo thứ tự: chỉ định...Prefill\n"
+                    "• Gửi ảnh chụp câu hỏi để tìm tự động\n\n"
+                    "Thử gõ một từ khoá nhé!"
+                )
+                return
+            rows = fetch_and_dedup_sheet()
+            results = search_rows(rows, text)
+            await msg.reply_text(format_results(results, text))
+    except Exception as e:
+        traceback.print_exc()
+        try:
+            await msg.reply_text(f"⚠️ Có lỗi xảy ra: {str(e)[:200]}\nVui lòng thử lại.")
+        except Exception:
+            pass
 
 
 async def main():
